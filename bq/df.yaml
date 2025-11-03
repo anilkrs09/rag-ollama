@@ -1,0 +1,111 @@
+etl-pipeline/
+├── Dockerfile
+├── requirements.txt
+├── etl/
+│   ├── __init__.py
+│   └── main.py
+├── helm/etl-service/   # same as in your previous setup
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   ├── templates/
+│   │   └── cronjob.yaml
+└── Jenkinsfile
+pandas
+google-cloud-storage
+google-cloud-bigquery
+
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY etl/ ./etl/
+ENV PYTHONPATH=/app
+
+ENTRYPOINT ["python", "etl/main.py"]
+
+
+
+
+import os
+import pandas as pd
+from google.cloud import storage, bigquery
+from io import BytesIO
+
+def download_from_gcs(bucket_name, source_blob_name):
+    """Download file from GCS to memory (returns pandas DataFrame)."""
+    print(f"Downloading gs://{bucket_name}/{source_blob_name}")
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(source_blob_name)
+    content = blob.download_as_bytes()
+    df = pd.read_csv(BytesIO(content))
+    print(f"Loaded {len(df)} rows from {source_blob_name}")
+    return df
+
+def transform(df):
+    """Basic transformations."""
+    # Example cleaning
+    df = df.dropna()
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    # Example add new column
+    df["processed_at"] = pd.Timestamp.utcnow()
+    return df
+
+def load_to_bigquery(df, project_id, dataset_id, table_id):
+    """Load DataFrame into BigQuery table (append mode)."""
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset_id}.{table_id}"
+    job = client.load_table_from_dataframe(df, table_ref, job_config=bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND"
+    ))
+    job.result()
+    print(f"Loaded {len(df)} rows to {table_ref}")
+
+def main():
+    bucket_name = os.environ["GCS_BUCKET"]
+    source_blob_name = os.environ["SOURCE_OBJECT"]
+    project_id = os.environ["BQ_PROJECT"]
+    dataset_id = os.environ["BQ_DATASET"]
+    table_id = os.environ["BQ_TABLE"]
+
+    df = download_from_gcs(bucket_name, source_blob_name)
+    df = transform(df)
+    load_to_bigquery(df, project_id, dataset_id, table_id)
+    print("✅ ETL complete")
+
+if __name__ == "__main__":
+    main()
+
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "etl-service.fullname" . }}
+spec:
+  schedule: "0 * * * *"  # every hour
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: etl-sa
+          restartPolicy: OnFailure
+          containers:
+          - name: etl
+            image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            env:
+              - name: GCS_BUCKET
+                value: "{{ .Values.env.gcsBucket }}"
+              - name: SOURCE_OBJECT
+                value: "{{ .Values.env.sourceObject }}"
+              - name: BQ_PROJECT
+                value: "{{ .Values.env.bqProject }}"
+              - name: BQ_DATASET
+                value: "{{ .Values.env.bqDataset }}"
+              - name: BQ_TABLE
+                value: "{{ .Values.env.bqTable }}"
+            resources:
+{{ toYaml .Values.resources | indent 14 }}
+
+

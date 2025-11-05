@@ -14,94 +14,89 @@ dataflow-csv-project/
             └── job.yaml
 
 
-import os
-import logging
 import apache_beam as beam
+from apache_beam.io import fileio
 from apache_beam.options.pipeline_options import PipelineOptions
-from google.cloud import storage
+import csv
+import os
+from apache_beam.io import filesystems
 
-class MoveFileFn(beam.DoFn):
-    def __init__(self, bucket_name, processed_prefix):
-        self.bucket_name = bucket_name
-        self.processed_prefix = processed_prefix
+# --------------------------
+# Custom DoFn: Parse CSV
+# --------------------------
+class ParseCSV(beam.DoFn):
+    def process(self, element):
+        """Parses each CSV line into a dict."""
+        line = element.decode('utf-8').strip()
+        reader = csv.reader([line])
+        for row in reader:
+            if len(row) == 4:
+                yield {
+                    "id": int(row[0]),
+                    "name": row[1],
+                    "dept": row[2],
+                    "description": row[3],
+                }
 
-    def setup(self):
-        self.client = storage.Client()
-        self.bucket = self.client.bucket(self.bucket_name)
+# --------------------------
+# Custom DoFn: Move processed files
+# --------------------------
+class MoveToProcessed(beam.DoFn):
+    def process(self, element):
+        source_path = element.metadata.path
+        processed_prefix = os.environ['PROCESSED_PREFIX']
+        file_name = os.path.basename(source_path)
+        dest_path = os.path.join(processed_prefix, file_name)
 
-    def process(self, file_path):
-        blob = self.bucket.blob(file_path)
-        dest_blob = self.bucket.blob(f"{self.processed_prefix}{os.path.basename(file_path)}")
-        self.bucket.copy_blob(blob, self.bucket, dest_blob.name)
-        blob.delete()
-        yield f"Moved {file_path} to {dest_blob.name}"
+        # Copy file then delete original
+        filesystems.FileSystems.copy([source_path], [dest_path])
+        filesystems.FileSystems.delete([source_path])
+        yield f"Moved {file_name} → {dest_path}"
 
-def parse_csv(line):
-    fields = line.split(',')
-    return {
-        'id': fields[0],
-        'name': fields[1],
-        'dept': fields[2],
-        'description': fields[3]
-    }
-
+# --------------------------
+# Main
+# --------------------------
 def run():
-    project = os.environ['PROJECT_ID']
+    project_id = os.environ['PROJECT_ID']
     region = os.environ['REGION']
-    input_path = os.environ['INPUT_PATH']
+    input_pattern = os.environ['INPUT_PATH']
     output_table = os.environ['OUTPUT_TABLE']
     temp_location = os.environ['TEMP_LOCATION']
     staging_location = os.environ['STAGING_LOCATION']
-    processed_prefix = os.environ['PROCESSED_PREFIX']
 
     pipeline_options = PipelineOptions(
-        project=project,
+        project=project_id,
         region=region,
         temp_location=temp_location,
         staging_location=staging_location,
-        runner='DataflowRunner',
-        save_main_session=True
+        save_main_session=True,
+        streaming=False
     )
 
-    bucket_name = input_path.split('/')[2]
-
     with beam.Pipeline(options=pipeline_options) as p:
-        files = p | "Match CSV Files" >> beam.io.MatchFiles(input_path)
-        matched = files | "Read Matches" >> beam.io.ReadMatches()
-
-        lines = (
-            matched
-            | "Read CSV Lines" >> beam.FlatMap(
-                lambda fm: [line.decode('utf-8').strip() for line in beam.io.filesystems.FileSystems.open(fm.path)]
-            )
-            | "Filter Header" >> beam.Filter(lambda line: not line.startswith("id"))
-            | "Parse CSV" >> beam.Map(parse_csv)
-        )
-
-        lines | "WriteToBigQuery" >> beam.io.WriteToBigQuery(
-            output_table,
-            schema={
-                'fields': [
-                    {'name': 'id', 'type': 'STRING', 'mode': 'NULLABLE'},
-                    {'name': 'name', 'type': 'STRING', 'mode': 'NULLABLE'},
-                    {'name': 'dept', 'type': 'STRING', 'mode': 'NULLABLE'},
-                    {'name': 'description', 'type': 'STRING', 'mode': 'NULLABLE'}
-                ]
-            },
-            write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-            create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
+        files = (
+            p
+            | "MatchFiles" >> fileio.MatchFiles(input_pattern)
+            | "ReadMatches" >> fileio.ReadMatches()
         )
 
         (
-            matched
-            | "Extract Paths" >> beam.Map(lambda f: f.path)
-            | "Move Files" >> beam.ParDo(MoveFileFn(bucket_name, processed_prefix))
+            files
+            | "ReadLines" >> beam.FlatMap(lambda file: file.read_utf8().splitlines())
+            | "ParseCSV" >> beam.ParDo(ParseCSV())
+            | "WriteToBigQuery" >> beam.io.WriteToBigQuery(
+                output_table,
+                schema="id:INTEGER,name:STRING,dept:STRING,description:STRING",
+                create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
+                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+            )
         )
 
-if __name__ == "__main__":
-    logging.getLogger().setLevel(logging.INFO)
-    run()
+        # Move processed files
+        _ = files | "MoveProcessedFiles" >> beam.ParDo(MoveToProcessed())
 
+if __name__ == "__main__":
+    run()
 
 
 {

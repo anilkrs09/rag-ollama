@@ -1,0 +1,53 @@
+pipeline {
+    agent any
+    environment {
+        PROJECT_ID = 'your-gcp-project'
+        REGION = 'us-central1'
+        IMAGE_TAG = "csv-to-bq-flex:${env.BUILD_NUMBER}"
+        IMAGE = "gcr.io/${PROJECT_ID}/${IMAGE_TAG}"
+        TEMPLATE_PATH = "gs://${PROJECT_ID}-dataflow-templates/csv-to-bq-flex-${env.BUILD_NUMBER}.json"
+        INPUT_PATH = "gs://your-bucket/input/*.csv"
+        OUTPUT_TABLE = "${PROJECT_ID}:my_dataset.csv_table"
+        TEMP_LOCATION = "gs://your-bucket/temp"
+        STAGING_LOCATION = "gs://your-bucket/staging"
+        PROCESSED_PREFIX = "processed/"
+    }
+    stages {
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                docker build -t ${IMAGE} ./pipeline
+                docker push ${IMAGE}
+                """
+            }
+        }
+        stage('Build Flex Template') {
+            steps {
+                sh """
+                gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+                gcloud config set project $PROJECT_ID
+                gcloud dataflow flex-template build $TEMPLATE_PATH \
+                    --image $IMAGE \
+                    --metadata-file ./pipeline/metadata.json \
+                    --sdk-language PYTHON
+                """
+            }
+        }
+        stage('Deploy Kubernetes Job via Helm') {
+            steps {
+                sh """
+                helm upgrade --install dataflow-csv-job ./helm/dataflow-job \
+                    --set image=${IMAGE} \
+                    --set templatePath=${TEMPLATE_PATH} \
+                    --set inputPath=${INPUT_PATH} \
+                    --set outputTable=${OUTPUT_TABLE} \
+                    --set tempLocation=${TEMP_LOCATION} \
+                    --set stagingLocation=${STAGING_LOCATION} \
+                    --set processedPrefix=${PROCESSED_PREFIX} \
+                    --set projectId=${PROJECT_ID} \
+                    --set region=${REGION}
+                """
+            }
+        }
+    }
+}

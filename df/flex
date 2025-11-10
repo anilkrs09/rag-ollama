@@ -9,6 +9,20 @@ function transformFn(line) {
 exports.transformFn = transformFn;
 
 
+/**
+ * Split CSV line and map fields to BigQuery schema.
+ */
+function transformFn(line) {
+  var values = line.split(",");
+  return JSON.stringify({
+    first_name: values[0],
+    last_name: values[1],
+    age: parseInt(values[2])
+  });
+}
+
+exports.transformFn = transformFn;
+
 
 # GCP project configuration
 project: "my-gcp-project"

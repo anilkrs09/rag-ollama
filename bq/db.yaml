@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.jobName }}
+spec:
+  backoffLimit: {{ .Values.backoffLimit }}
+  template:
+    spec:
+      restartPolicy: {{ .Values.restartPolicy }}
+      serviceAccountName: default
+      containers:
+        - name: dataflow-launcher
+          image: {{ .Values.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "🔑 Authenticating with GCP..."
+              {{- if not .Values.useWorkloadIdentity }}
+              gcloud auth activate-service-account --key-file=/var/secrets/{{ .Values.serviceAccountKey }}
+              {{- end }}
+              gcloud config set project {{ .Values.projectId }}
+              echo "🚀 Launching Dataflow template job..."
+              gcloud dataflow jobs run {{ .Values.jobName }} \
+                --gcs-location gs://dataflow-templates-{{ .Values.region }}/latest/GCS_CSV_to_BigQuery \
+                --region {{ .Values.region }} \
+                --parameters \
+                  inputFilePattern={{ .Values.inputFilePattern }},\
+                  schemaJSONPath={{ .Values.schemaJSONPath }},\
+                  outputTable={{ .Values.outputTable }},\
+                  badRecordsOutputTable={{ .Values.badRecordsOutputTable }},\
+                  bigQueryLoadingTemporaryDirectory={{ .Values.bigQueryTempDir }},\
+                  csvFormat={{ .Values.csvFormat }},\
+                  delimiter={{ .Values.delimiter }},\
+                  containsHeaders={{ .Values.containsHeaders }},\
+                  csvFileEncoding={{ .Values.csvFileEncoding }}
+              echo "✅ Dataflow job triggered successfully."
+          volumeMounts:
+            {{- if not .Values.useWorkloadIdentity }}
+            - name: gcp-key
+              mountPath: /var/secrets
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if not .Values.useWorkloadIdentity }}
+        - name: gcp-key
+          secret:
+            secretName: {{ .Values.serviceAccountSecret }}
+        {{- end }}
+
+
+
+# === GCP Project and Region ===
+projectId: my-gcp-project
+region: us-central1
+
+# === Job Configuration ===
+jobName: csv2bq-job
+backoffLimit: 1
+restartPolicy: Never
+
+# === Input/Output Parameters ===
+inputFilePattern: gs://my-bucket/input/*.csv
+schemaJSONPath: gs://my-bucket/schema/schema.json
+outputTable: my-gcp-project:employee_data.employees
+badRecordsOutputTable: my-gcp-project:employee_data.bad_records
+bigQueryTempDir: gs://my-bucket/temp
+
+# === CSV Options ===
+containsHeaders: "true"
+delimiter: ","
+csvFormat: Default
+csvFileEncoding: "UTF-8"
+
+# === Container Image ===
+image: google/cloud-sdk:slim
+
+# === Auth Options ===
+# Option 1: Mount service account key (if not using Workload Identity)
+serviceAccountSecret: gcp-sa-key
+serviceAccountKey: key.json
+
+# Option 2: Use Workload Identity (set to true to disable key mounting)
+useWorkloadIdentity: false

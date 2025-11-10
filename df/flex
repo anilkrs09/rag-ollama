@@ -1,0 +1,104 @@
+# GCP project configuration
+project: "my-gcp-project"
+region: "europe-west1"
+
+# GCS locations
+templateGcsPath: "gs://dataflow-templates/latest/flex/GCS_Text_to_BigQuery_Flex"
+inputFilePattern: "gs://my-input-bucket/input/*.txt"
+schemaJsonPath: "gs://my-input-bucket/schema/schema.json"
+outputTable: "my_dataset.my_table"
+tempLocation: "gs://my-dataflow-temp/temp"
+stagingLocation: "gs://my-dataflow-temp/staging"
+
+# Service account for Dataflow
+serviceAccount: "dataflow-runner@my-gcp-project.iam.gserviceaccount.com"
+
+# Job configuration
+jobName: "gcs-text-to-bq-job"
+triggerType: "job" # "job" for one-time or "cron" for periodic
+schedule: "0 * * * *" # Used only if triggerType=cron
+
+# Optional Dataflow parameters
+maxWorkers: 5
+machineType: "n1-standard-2"
+network: "default"
+subnetwork: ""
+labels:
+  environment: "dev"
+  team: "data-pipeline"
+
+
+
+{{- if eq .Values.triggerType "cron" }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-dataflow
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  schedule: "{{ .Values.schedule }}"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: {{ .Values.serviceAccount }}
+          restartPolicy: OnFailure
+          containers:
+          - name: dataflow-launcher
+            image: google/cloud-sdk:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Launching Dataflow Flex Template..."
+              gcloud dataflow flex-template run {{ .Values.jobName }}-$(date +%s) \
+                --project={{ .Values.project }} \
+                --region={{ .Values.region }} \
+                --template-file-gcs-location={{ .Values.templateGcsPath }} \
+                --parameters \
+inputFilePattern={{ .Values.inputFilePattern }},\
+JSONPath={{ .Values.schemaJsonPath }},\
+outputTable={{ .Values.outputTable }},\
+bigQueryLoadingTemporaryDirectory={{ .Values.tempLocation }},\
+stagingLocation={{ .Values.stagingLocation }},\
+maxWorkers={{ .Values.maxWorkers }},\
+machineType={{ .Values.machineType }},\
+network={{ .Values.network }}
+{{- else }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-dataflow
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  template:
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount }}
+      restartPolicy: OnFailure
+      containers:
+      - name: dataflow-launcher
+        image: google/cloud-sdk:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Launching Dataflow Flex Template..."
+          gcloud dataflow flex-template run {{ .Values.jobName }}-$(date +%s) \
+            --project={{ .Values.project }} \
+            --region={{ .Values.region }} \
+            --template-file-gcs-location={{ .Values.templateGcsPath }} \
+            --parameters \
+inputFilePattern={{ .Values.inputFilePattern }},\
+JSONPath={{ .Values.schemaJsonPath }},\
+outputTable={{ .Values.outputTable }},\
+bigQueryLoadingTemporaryDirectory={{ .Values.tempLocation }},\
+stagingLocation={{ .Values.stagingLocation }},\
+maxWorkers={{ .Values.maxWorkers }},\
+machineType={{ .Values.machineType }},\
+network={{ .Values.network }}
+{{- end }}
+
+
+

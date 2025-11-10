@@ -1,3 +1,11 @@
+[
+  { "name": "id", "type": "STRING", "mode": "NULLABLE" },
+  { "name": "name", "type": "STRING", "mode": "NULLABLE" },
+  { "name": "dept", "type": "STRING", "mode": "NULLABLE" },
+  { "name": "descripts", "type": "STRING", "mode": "NULLABLE" }
+]
+
+
 apiVersion: batch/v1
 kind: Job
 metadata:

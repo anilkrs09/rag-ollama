@@ -1,3 +1,15 @@
+/**
+ * No-op transformation.
+ * Returns the input line unchanged.
+ */
+function transformFn(line) {
+  return line;
+}
+
+exports.transformFn = transformFn;
+
+
+
 # GCP project configuration
 project: "my-gcp-project"
 region: "europe-west1"
